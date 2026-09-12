@@ -10,3 +10,6 @@ DerivedData/
 .swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
 .netrc
 Package.resolved
+
+# Swift bindings written by build.rs on every macOS build
+/Sources/generated
