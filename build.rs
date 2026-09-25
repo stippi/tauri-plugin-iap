@@ -176,5 +176,21 @@ fn swift_library_static_lib_dir() -> PathBuf {
     };
 
     let arch_dir = format!("{}-apple-macosx", swift_arch());
-    swift_build_dir().join(format!("{arch_dir}/{debug_or_release}"))
+    let legacy = swift_build_dir().join(format!("{arch_dir}/{debug_or_release}"));
+    // Xcode 27's SwiftPM builds through the Xcode build system and puts the
+    // archive under out/Products/<Configuration> instead; the legacy dir may
+    // still exist, so trust only a candidate that contains the library.
+    let configuration = if is_release_build() {
+        "Release"
+    } else {
+        "Debug"
+    };
+    [
+        legacy.clone(),
+        swift_build_dir().join("out/Products").join(configuration),
+        swift_build_dir().join("Products").join(configuration),
+    ]
+    .into_iter()
+    .find(|dir| dir.join("libtauri-plugin-iap.a").exists())
+    .unwrap_or(legacy)
 }
