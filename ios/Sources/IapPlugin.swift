@@ -447,7 +447,7 @@ class IapPlugin: Plugin {
 }
 
 @_cdecl("init_plugin_iap")
-func initPlugin() -> Plugin {
+public func initPlugin() -> Plugin {
     if #available(iOS 15.0, *) {
         return IapPlugin()
     } else {
