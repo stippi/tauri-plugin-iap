@@ -328,7 +328,7 @@ Returns the complete purchase history.
 Acknowledges a non-consumable purchase (subscriptions, durables). On Android this is required within 3 days or Google auto-refunds the purchase. No-op on iOS, macOS, and Windows. Use `consumePurchase` instead for consumables.
 
 ### `consumePurchase(purchaseToken: string)`
-Consumes a consumable purchase (credits, coins, gems) so it can be purchased again. On Android calls `BillingClient.consumeAsync()`; on Windows calls `StoreContext.ReportConsumableFulfillmentAsync` with quantity 1. No-op on iOS and macOS — StoreKit auto-allows re-purchase. Never call both `acknowledgePurchase` and `consumePurchase` for the same purchase token.
+Consumes a consumable purchase (credits, coins, gems) so it can be purchased again. On Android calls `BillingClient.consumeAsync()`; on Windows calls `StoreContext.ReportConsumableFulfillmentAsync` with quantity 1. On iOS and macOS it finishes the StoreKit transaction: a consumable stays unfinished after `purchase()` until you consume it, so call this once your backend has delivered the purchase. Until then StoreKit hands the purchase back on every launch (`restorePurchases` with `inapp`, and the `purchaseUpdated` event), which is what makes a failed delivery recoverable. Never call both `acknowledgePurchase` and `consumePurchase` for the same purchase token.
 
 ### `getProductStatus(productId: string, productType: 'subs' | 'inapp' = 'subs')`
 Checks the ownership and subscription status of a specific product.

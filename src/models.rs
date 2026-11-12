@@ -150,9 +150,16 @@ pub struct RestorePurchasesResponse {
 #[serde(rename_all = "camelCase")]
 pub struct PurchaseHistoryRecord {
     pub product_id: String,
+    /// StoreKit's product type (`Consumable`, `Auto-Renewable Subscription`, …)
+    /// on Apple platforms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub product_type: Option<String>,
     pub purchase_time: i64,
     pub purchase_token: String,
     pub quantity: i32,
+    /// The signed transaction (Apple platforms) a backend can verify.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jws_representation: Option<String>,
     pub original_json: String,
     pub signature: String,
 }
@@ -553,9 +560,11 @@ mod tests {
     fn test_purchase_history_record_serde() {
         let record = PurchaseHistoryRecord {
             product_id: "prod1".to_string(),
+            product_type: None,
             purchase_time: 1_700_000_000_000,
             purchase_token: "token".to_string(),
             quantity: 1,
+            jws_representation: None,
             original_json: "{}".to_string(),
             signature: "sig".to_string(),
         };

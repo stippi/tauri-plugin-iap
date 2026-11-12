@@ -2,8 +2,8 @@ use serde::de::DeserializeOwned;
 use tauri::{AppHandle, Runtime, plugin::PluginApi};
 
 use crate::models::{
-    GetProductsResponse, ProductStatus, Purchase, PurchaseRequest, RestorePurchasesRequest,
-    RestorePurchasesResponse,
+    GetProductsResponse, GetPurchaseHistoryResponse, ProductStatus, Purchase, PurchaseRequest,
+    RestorePurchasesRequest, RestorePurchasesResponse,
 };
 
 /// Validation checks for macOS IAP functionality.
@@ -64,6 +64,8 @@ mod ffi {
             offerToken: Option<String>,
         ) -> Result<String, FFIResult>;
         async fn restorePurchases(&self, productType: String) -> Result<String, FFIResult>;
+        async fn getPurchaseHistory(&self) -> Result<String, FFIResult>;
+        async fn consumePurchase(&self, purchaseToken: String) -> Result<String, FFIResult>;
         async fn getProductStatus(
             &self,
             productId: String,
@@ -165,8 +167,14 @@ impl<R: Runtime> Iap<R> {
             .parse()
     }
 
-    /// No-op: macOS finishes transactions inside `purchase()` itself,
-    /// so there is nothing left to acknowledge here.
+    pub async fn get_purchase_history(&self) -> crate::Result<GetPurchaseHistoryResponse> {
+        validation::require_bundle()?;
+
+        self.plugin.getPurchaseHistory().await.parse()
+    }
+
+    /// No-op: macOS finishes everything but consumables inside
+    /// `purchase()` itself, so there is nothing left to acknowledge here.
     // `async` matches the cross-platform `Iap` contract — `commands.rs` `.await`s
     // this on every platform, including ones that genuinely yield (Android).
     #[allow(clippy::unused_async)]
@@ -175,12 +183,17 @@ impl<R: Runtime> Iap<R> {
         Ok(())
     }
 
-    /// No-op: macOS finishes transactions inside `purchase()` itself,
-    /// and `StoreKit` auto-allows re-purchase of consumables once finished.
-    #[allow(clippy::unused_async)]
-    pub async fn consume_purchase(&self, _purchase_token: String) -> crate::Result<()> {
+    /// Finishes a consumable's transaction once the app has delivered it.
+    /// Until then `StoreKit` keeps handing it back (`restore_purchases`
+    /// with `inapp`), so a purchase survives a failed delivery.
+    pub async fn consume_purchase(&self, purchase_token: String) -> crate::Result<()> {
         validation::require_bundle()?;
-        Ok(())
+
+        self.plugin
+            .consumePurchase(purchase_token)
+            .await
+            .parse::<serde_json::Value>()
+            .map(|_| ())
     }
 
     pub async fn get_product_status(

@@ -69,9 +69,10 @@ impl<R: Runtime> Iap<R> {
             .map_err(Into::into)
     }
 
-    pub fn get_purchase_history(&self) -> crate::Result<GetPurchaseHistoryResponse> {
+    pub async fn get_purchase_history(&self) -> crate::Result<GetPurchaseHistoryResponse> {
         self.0
-            .run_mobile_plugin("getPurchaseHistory", ())
+            .run_mobile_plugin_async("getPurchaseHistory", ())
+            .await
             .map_err(Into::into)
     }
 
