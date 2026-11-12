@@ -138,8 +138,7 @@ class IapPlugin {
         case .success(let verification):
             switch verification {
             case .verified(let transaction):
-                // Finish the transaction
-                await transaction.finish()
+                await finishUnlessConsumable(transaction)
 
                 let purchase = try await createPurchaseObject(from: verification, product: product)
                 return try serializeToJSON(purchase)
@@ -198,7 +197,51 @@ class IapPlugin {
             }
         }
 
+        // Consumables are never entitlements. The ones the app has not
+        // consumed yet (`consumePurchase`) are still its to deliver.
+        if requestedType.isEmpty || requestedType == "inapp" {
+            purchases.append(contentsOf: await unfinishedConsumables())
+        }
+
         return try serializeToJSON(["purchases": purchases])
+    }
+
+    /// Every transaction of the account StoreKit still lists, with its signed
+    /// representation. Finished consumables are part of it only when the app
+    /// sets `SKIncludeConsumableInAppPurchaseHistory` (macOS 15+).
+    public func getPurchaseHistory() async throws(FFIResult) -> String {
+        var history: [JsonObject] = []
+        for await result in Transaction.all {
+            guard case .verified(let transaction) = result else { continue }
+            history.append([
+                "productId": transaction.productID,
+                "productType": transaction.productType.rawValue,
+                "purchaseTime": Int(transaction.purchaseDate.timeIntervalSince1970 * 1000),
+                "purchaseToken": String(transaction.id),
+                "quantity": transaction.purchasedQuantity,
+                "jwsRepresentation": result.jwsRepresentation,
+                "originalJson": "",  // Not available in StoreKit 2
+                "signature": "",  // Not available in StoreKit 2
+            ])
+        }
+        return try serializeToJSON(["history": history])
+    }
+
+    /// Finishes a consumable's transaction: the app has delivered what was
+    /// bought. Until then the transaction stays unfinished — StoreKit hands
+    /// it back on every launch (`restorePurchases` with `inapp`, and the
+    /// `purchaseUpdated` event), so a purchase survives a failed delivery.
+    /// A token that names no unfinished transaction is fine: consuming
+    /// twice is not an error.
+    public func consumePurchase(purchaseToken: RustString) async throws(FFIResult) -> String {
+        let token = purchaseToken.as_str().toString()
+        for await result in Transaction.unfinished {
+            if case .verified(let transaction) = result, String(transaction.id) == token {
+                await transaction.finish()
+                break
+            }
+        }
+        return "{}"
     }
 
     public func getProductStatus(productId: RustString, productType: RustString)
@@ -299,13 +342,36 @@ class IapPlugin {
                 }
             }
 
-            // Always finish transactions
-            await transaction.finish()
+            await finishUnlessConsumable(transaction)
 
         case .unverified(_, _):
             // Handle unverified transaction
             break
         }
+    }
+
+    /// Everything but a consumable is finished as soon as it is verified:
+    /// what it grants stays queryable (`Transaction.currentEntitlements`).
+    /// A finished consumable is gone, so it stays unfinished until the app
+    /// reports it delivered (`consumePurchase`).
+    private func finishUnlessConsumable(_ transaction: Transaction) async {
+        if transaction.productType != .consumable {
+            await transaction.finish()
+        }
+    }
+
+    /// The consumables bought but not consumed yet, as purchase objects.
+    private func unfinishedConsumables() async -> [JsonObject] {
+        var purchases: [JsonObject] = []
+        for await result in Transaction.unfinished {
+            guard case .verified(let transaction) = result,
+                transaction.productType == .consumable,
+                let product = try? await Product.products(for: [transaction.productID]).first,
+                let purchase = try? await createPurchaseObject(from: result, product: product)
+            else { continue }
+            purchases.append(purchase)
+        }
+        return purchases
     }
 
     private func serializeToJSON(_ object: JsonObject) throws(FFIResult) -> String {
