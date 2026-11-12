@@ -46,7 +46,8 @@ impl<R: Runtime> Iap<R> {
         )))
     }
 
-    pub fn get_purchase_history(&self) -> crate::Result<GetPurchaseHistoryResponse> {
+    #[allow(clippy::unused_async)]
+    pub async fn get_purchase_history(&self) -> crate::Result<GetPurchaseHistoryResponse> {
         Err(crate::Error::from(std::io::Error::other(
             "IAP is not supported on this platform",
         )))
