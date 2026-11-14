@@ -334,12 +334,12 @@ class IapPlugin {
     private func handleTransactionUpdate(_ result: VerificationResult<Transaction>) async {
         switch result {
         case .verified(let transaction):
-            // Get product details
-            if let product = try? await Product.products(for: [transaction.productID]).first {
-                if let purchase = try? await createPurchaseObject(from: result, product: product),
-                   let jsonString = try? serializeToJSON(purchase) {
-                    try? trigger("purchaseUpdated", jsonString)
-                }
+            // The product only adds the renewal state of a subscription;
+            // an update is reported without it too.
+            let product = try? await Product.products(for: [transaction.productID]).first
+            if let purchase = try? await createPurchaseObject(from: result, product: product),
+               let jsonString = try? serializeToJSON(purchase) {
+                try? trigger("purchaseUpdated", jsonString)
             }
 
             await finishUnlessConsumable(transaction)
@@ -361,13 +361,15 @@ class IapPlugin {
     }
 
     /// The consumables bought but not consumed yet, as purchase objects.
+    /// Built from the transaction alone: a product that left the store, or
+    /// a product lookup that fails, must not hide a purchase that was paid
+    /// for and is still to be delivered.
     private func unfinishedConsumables() async -> [JsonObject] {
         var purchases: [JsonObject] = []
         for await result in Transaction.unfinished {
             guard case .verified(let transaction) = result,
                 transaction.productType == .consumable,
-                let product = try? await Product.products(for: [transaction.productID]).first,
-                let purchase = try? await createPurchaseObject(from: result, product: product)
+                let purchase = try? await createPurchaseObject(from: result, product: nil)
             else { continue }
             purchases.append(purchase)
         }
@@ -411,7 +413,7 @@ class IapPlugin {
         return NSDecimalNumber(decimal: decimal * 1_000_000).int64Value
     }
 
-    private func createPurchaseObject(from verificationResult: VerificationResult<Transaction>, product: Product) async throws(FFIResult)
+    private func createPurchaseObject(from verificationResult: VerificationResult<Transaction>, product: Product?) async throws(FFIResult)
         -> JsonObject
     {
         guard case .verified(let transaction) = verificationResult else {
@@ -421,7 +423,7 @@ class IapPlugin {
         var isAutoRenewing = false
 
         // Check if it's an auto-renewable subscription
-        if product.type == .autoRenewable {
+        if let product, product.type == .autoRenewable {
             // Check subscription status
             if let statuses = try? await product.subscription?.status {
                 for status in statuses {
