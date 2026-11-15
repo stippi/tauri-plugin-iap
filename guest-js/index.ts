@@ -104,6 +104,10 @@ export interface RestorePurchasesResponse {
  */
 export interface PurchaseHistoryRecord {
   productId: string;
+  /** StoreKit's product type on Apple platforms (e.g. `Consumable`). */
+  productType?: string;
+  /** The signed transaction (Apple platforms) a backend can verify. */
+  jwsRepresentation?: string;
   purchaseTime: number;
   purchaseToken: string;
   quantity: number;

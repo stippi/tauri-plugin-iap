@@ -165,8 +165,7 @@ class IapPlugin: Plugin {
             case .success(let verification):
                 switch verification {
                 case .verified(let transaction):
-                    // Finish the transaction
-                    await transaction.finish()
+                    await finishUnlessConsumable(transaction)
 
                     let purchase = try await createPurchaseObject(from: verification, product: product)
                     invoke.resolve(purchase)
@@ -226,7 +225,14 @@ class IapPlugin: Plugin {
                     continue
                 }
             }
-            
+
+            // Consumables are never entitlements. The ones the app has not
+            // consumed yet (`consumePurchase`) are still its to deliver.
+            let requestedType = args?.productType
+            if requestedType == nil || requestedType == "inapp" {
+                purchases.append(contentsOf: await unfinishedConsumables())
+            }
+
             invoke.resolve(["purchases": purchases])
         } catch {
             invoke.reject("Failed to restore purchases: \(error.localizedDescription)")
@@ -243,9 +249,11 @@ class IapPlugin: Plugin {
                 case .verified(let transaction):
                     let record: JsonObject = [
                         "productId": transaction.productID,
+                        "productType": transaction.productType.rawValue,
                         "purchaseTime": Int(transaction.purchaseDate.timeIntervalSince1970 * 1000),
                         "purchaseToken": String(transaction.id),
                         "quantity": transaction.purchasedQuantity,
+                        "jwsRepresentation": result.jwsRepresentation,
                         "originalJson": "",  // Not available in StoreKit 2
                         "signature": ""      // Not available in StoreKit 2
                     ]
@@ -261,19 +269,30 @@ class IapPlugin: Plugin {
         }
     }
     
-    /// No-op: `purchase()` already calls `transaction.finish()` after verification.
-    /// Args are still parsed so a missing/invalid `purchaseToken` rejects here too,
-    /// matching Android/Windows behavior.
+    /// No-op: `purchase()` already calls `transaction.finish()` for everything
+    /// but consumables (see `consumePurchase`). Args are still parsed so a
+    /// missing/invalid `purchaseToken` rejects here too, matching
+    /// Android/Windows behavior.
     @objc public func acknowledgePurchase(_ invoke: Invoke) throws {
         _ = try invoke.parseArgs(AcknowledgePurchaseArgs.self)
         invoke.resolve()
     }
 
-    /// No-op: StoreKit auto-allows re-purchase of consumables once the transaction
-    /// has been finished, which `purchase()` already does. Args are still parsed
-    /// for cross-platform consistency.
-    @objc public func consumePurchase(_ invoke: Invoke) throws {
-        _ = try invoke.parseArgs(ConsumePurchaseArgs.self)
+    /// Finishes a consumable's transaction: the app has delivered what was
+    /// bought. Until then the transaction stays unfinished — StoreKit hands
+    /// it back on every launch (`restorePurchases` with `inapp`, and the
+    /// `purchaseUpdated` event), so a purchase survives a failed delivery.
+    /// A token that names no unfinished transaction resolves too: consuming
+    /// twice is not an error.
+    @objc public func consumePurchase(_ invoke: Invoke) async throws {
+        let args = try invoke.parseArgs(ConsumePurchaseArgs.self)
+        for await result in Transaction.unfinished {
+            if case .verified(let transaction) = result,
+               String(transaction.id) == args.purchaseToken {
+                await transaction.finish()
+                break
+            }
+        }
         invoke.resolve()
     }
 
@@ -358,24 +377,49 @@ class IapPlugin: Plugin {
     private func handleTransactionUpdate(_ result: VerificationResult<Transaction>) async {
         switch result {
         case .verified(let transaction):
-            // Get product details
-            if let product = try? await Product.products(for: [transaction.productID]).first {
-                if let purchase = try? await createPurchaseObject(from: result, product: product) {
-                    // Emit event - convert to JSObject-compatible format
-                    trigger("purchaseUpdated", data: purchase as! JSObject)
-                }
+            // The product only adds the renewal state of a subscription;
+            // an update is reported without it too.
+            let product = try? await Product.products(for: [transaction.productID]).first
+            if let purchase = try? await createPurchaseObject(from: result, product: product) {
+                // Emit event - convert to JSObject-compatible format
+                trigger("purchaseUpdated", data: purchase as! JSObject)
             }
 
-            // Always finish transactions
-            await transaction.finish()
+            await finishUnlessConsumable(transaction)
 
         case .unverified(_, _):
             // Handle unverified transaction
             break
         }
     }
+
+    /// Everything but a consumable is finished as soon as it is verified:
+    /// what it grants stays queryable (`Transaction.currentEntitlements`).
+    /// A finished consumable is gone, so it stays unfinished until the app
+    /// reports it delivered (`consumePurchase`).
+    private func finishUnlessConsumable(_ transaction: Transaction) async {
+        if transaction.productType != .consumable {
+            await transaction.finish()
+        }
+    }
+
+    /// The consumables bought but not consumed yet, as purchase objects.
+    /// Built from the transaction alone: a product that left the store, or
+    /// a product lookup that fails, must not hide a purchase that was paid
+    /// for and is still to be delivered.
+    private func unfinishedConsumables() async -> [JsonObject] {
+        var purchases: [JsonObject] = []
+        for await result in Transaction.unfinished {
+            guard case .verified(let transaction) = result,
+                  transaction.productType == .consumable,
+                  let purchase = try? await createPurchaseObject(from: result, product: nil)
+            else { continue }
+            purchases.append(purchase)
+        }
+        return purchases
+    }
     
-    private func createPurchaseObject(from verificationResult: VerificationResult<Transaction>, product: Product) async throws -> JsonObject {
+    private func createPurchaseObject(from verificationResult: VerificationResult<Transaction>, product: Product?) async throws -> JsonObject {
         guard case .verified(let transaction) = verificationResult else {
             throw NSError(domain: "IapPlugin", code: -1, userInfo: [NSLocalizedDescriptionKey: "Transaction not verified"])
         }
@@ -383,7 +427,7 @@ class IapPlugin: Plugin {
         var isAutoRenewing = false
 
         // Check if it's an auto-renewable subscription
-        if product.type == .autoRenewable {
+        if let product, product.type == .autoRenewable {
             // Check subscription status
             if let statuses = try? await product.subscription?.status {
                 for status in statuses {
@@ -466,6 +510,9 @@ public func initPlugin() -> Plugin {
                 invoke.reject("IAP requires iOS 15.0 or later")
             }
             @objc func acknowledgePurchase(_ invoke: Invoke) {
+                invoke.reject("IAP requires iOS 15.0 or later")
+            }
+            @objc func consumePurchase(_ invoke: Invoke) {
                 invoke.reject("IAP requires iOS 15.0 or later")
             }
             @objc func getProductStatus(_ invoke: Invoke) {
